@@ -16,12 +16,12 @@ import {
   Upload,
   X,
   FileJson,
-  Download,
-  Image as ImageIcon,
   Loader2,
-  Camera
+  Camera,
+  Lock,
+  Unlock
 } from "lucide-react";
-import { createWorker } from "tesseract.js";
+import Cookies from "js-cookie";
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -58,33 +58,79 @@ export default function TimetableApp() {
   const [customSchedules, setCustomSchedules] = useState<{ [key: string]: SectionSchedule }>({});
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isAdminLoginOpen, setIsAdminLoginOpen] = useState(false);
+  const [adminPassword, setAdminPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
+
   const [importText, setImportText] = useState("");
   const [importName, setImportName] = useState("");
   const [isScanning, setIsScanning] = useState(false);
+  const [scanFile, setScanFile] = useState<File | null>(null);
   const now = useCurrentTime();
 
-  const handleImageScan = async (file: File) => {
-    setIsScanning(true);
-    try {
-      const worker = await createWorker('eng');
-      const { data: { text } } = await worker.recognize(file);
-      await worker.terminate();
+  // Handle cookies on load
+  useEffect(() => {
+    if (Cookies.get('admin_session') === 'true') {
+      setIsAdmin(true);
+    }
+  }, []);
 
-      // Basic extraction logic for "wowed" effect
-      // Looking for common subject codes/names in the text
-      const subjects = ["OS", "DBMS", "CN", "COA", "UHV", "DM", "ADA", "IDS", "NS"];
-      const detected: string[] = [];
-      subjects.forEach(s => {
-        if (text.toUpperCase().includes(s)) detected.push(s);
+  const handleAdminLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError("");
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: adminPassword })
       });
 
-      setImportText(JSON.stringify({
-        "Monday": { "1": { "subject": detected[0] || "Found Data", "room": "ScanResult", "slots": [1] } }
-      }, null, 2));
-      setImportName("Scanned Result");
-      alert(`Scan complete! Found subjects: ${detected.join(", ")}. Please review the JSON format.`);
+      if (res.ok) {
+        setIsAdmin(true);
+        setIsAdminLoginOpen(false);
+        setAdminPassword("");
+        if (scanFile) {
+          handleImageScan(scanFile);
+        }
+      } else {
+        const data = await res.json();
+        setLoginError(data.error || "Incorrect password");
+      }
     } catch (e) {
-      alert("Scan failed. Try a clearer photo.");
+      setLoginError("Login failed.");
+    }
+  };
+
+  const handleImageScan = async (file: File) => {
+    if (!isAdmin) {
+      setScanFile(file);
+      setIsAdminLoginOpen(true);
+      return;
+    }
+
+    setIsScanning(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/scan", {
+        method: "POST",
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to scan image");
+      }
+
+      setImportText(JSON.stringify(result.data, null, 2));
+      setImportName("AI Scanned Schedule");
+      setScanFile(null);
+      alert("Scan complete! Please review the extracted JSON data before saving.");
+    } catch (e: any) {
+      alert(`Scan failed: ${e.message}`);
     } finally {
       setIsScanning(false);
     }
@@ -252,26 +298,42 @@ export default function TimetableApp() {
             <Calendar className="text-blue-500" size={32} />
             ClassPing
           </h1>
-          <p className="text-zinc-400 font-medium">Your personalized academic companion</p>
+          <p className="text-zinc-400 font-medium">Your personalized academic companion <p className="text-1.5xl font-bold gradient-text tracking-tight mb-2 flex items-center gap-3">Made by Anuj Rawat</p></p>
         </motion.div>
 
         <div className="flex items-center gap-3">
           {/* Section Switcher */}
-          <div className="flex p-1 bg-zinc-900/50 rounded-xl border border-white/5 backdrop-blur-sm overflow-x-auto max-w-[200px] no-scrollbar">
-            {Object.keys(allSchedules).map((s) => (
-              <button
-                key={s}
-                onClick={() => setSection(s)}
-                className={cn(
-                  "px-4 py-2 rounded-lg text-sm font-semibold transition-all whitespace-nowrap focus:outline-none",
-                  section === s
-                    ? "bg-blue-600 text-white shadow-lg shadow-blue-500/20"
-                    : "text-zinc-500 hover:text-zinc-300"
-                )}
-              >
-                {s}
-              </button>
-            ))}
+          <div className="flex p-1 bg-zinc-900/50 rounded-xl border border-white/5 backdrop-blur-sm overflow-x-auto max-w-sm no-scrollbar">
+            {Object.keys(allSchedules).map((s) => {
+              const isCustom = customSchedules.hasOwnProperty(s);
+              return (
+                <div key={s} className="flex relative">
+                  <button
+                    onClick={() => setSection(s)}
+                    className={cn(
+                      "px-4 py-2 rounded-lg text-sm font-semibold transition-all whitespace-nowrap focus:outline-none flex items-center pr-8",
+                      section === s
+                        ? "bg-blue-600 text-white shadow-lg shadow-blue-500/20"
+                        : "text-zinc-500 hover:text-zinc-300"
+                    )}
+                  >
+                    {s}
+                  </button>
+                  {isCustom && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteCustomSchedule(s);
+                      }}
+                      className="absolute right-1 top-1/2 -translate-y-1/2 p-1.5 text-zinc-400 hover:text-red-400 hover:bg-white/10 rounded-full transition-colors"
+                      title="Delete Schedule"
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           <button
@@ -471,16 +533,9 @@ export default function TimetableApp() {
                     className="w-full bg-zinc-800 border border-white/5 rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500/50 transition-all font-mono text-sm no-scrollbar"
                   />
                 </div>
-
-                <div className="flex items-center gap-3 p-4 bg-blue-500/5 rounded-2xl border border-blue-500/10">
-                  <Download size={20} className="text-blue-400 shrink-0" />
-                  <p className="text-xs text-zinc-400">
-                    Copy the existing schedule from <code className="text-blue-300">src/lib/data.ts</code> to use as a template.
-                  </p>
-                </div>
-
-                <div className="flex gap-3 pt-2">
+                <div className="flex flex-col gap-3 pt-2">
                   <button
+                    disabled={isScanning}
                     onClick={() => {
                       if (!importName || !importText) return;
                       try {
@@ -495,53 +550,119 @@ export default function TimetableApp() {
                         alert("Invalid JSON format. Please check your data.");
                       }
                     }}
-                    className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-2xl transition-all shadow-lg shadow-blue-500/20 active:scale-95"
+                    className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-2xl transition-all shadow-lg shadow-blue-500/20 active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2"
                   >
-                    {isScanning ? <Loader2 className="animate-spin mx-auto" /> : "Save Timetable"}
+                    {isScanning ? <><Loader2 className="animate-spin" size={20} /> Scanning...</> : "Save Timetable"}
                   </button>
-                  <button
-                    onClick={() => {
-                      const fileInput = document.createElement('input');
-                      fileInput.type = 'file';
-                      fileInput.accept = 'image/*';
-                      fileInput.onchange = (e: any) => {
-                        const file = e.target.files[0];
-                        handleImageScan(file);
-                      };
-                      fileInput.click();
-                    }}
-                    className="px-6 bg-zinc-800 hover:bg-zinc-700 text-purple-400 font-bold py-4 rounded-2xl transition-all active:scale-95 flex items-center gap-2"
-                    title="Scan Timetable Image"
-                  >
-                    <Camera size={20} />
-                    Scan
-                  </button>
-                  <button
-                    onClick={() => {
-                      const fileInput = document.createElement('input');
-                      fileInput.type = 'file';
-                      fileInput.accept = '.json';
-                      fileInput.onchange = (e: any) => {
-                        const file = e.target.files[0];
-                        const reader = new FileReader();
-                        reader.onload = (event: any) => {
-                          setImportText(event.target.result);
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => {
+                        const fileInput = document.createElement('input');
+                        fileInput.type = 'file';
+                        fileInput.accept = 'image/*';
+                        fileInput.onchange = (e: any) => {
+                          const file = e.target.files[0];
+                          handleImageScan(file);
                         };
-                        reader.readAsText(file);
-                      };
-                      fileInput.click();
-                    }}
-                    className="px-6 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold py-4 rounded-2xl transition-all active:scale-95 flex items-center gap-2"
-                  >
-                    <FileJson size={20} />
-                    File
-                  </button>
+                        fileInput.click();
+                      }}
+                      className={cn(
+                        "px-6 font-bold flex-1 py-4 rounded-2xl transition-all active:scale-95 flex items-center justify-center gap-2",
+                        isAdmin
+                          ? "bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 text-purple-400"
+                          : "bg-zinc-800 hover:bg-zinc-700 border border-white/5 text-zinc-400"
+                      )}
+                      title="Admin Only: Extract timetable using AI"
+                    >
+                      {isAdmin ? <Camera size={20} /> : <Lock size={20} className="text-zinc-500" />}
+                      AI Scan
+                    </button>
+                    <button
+                      onClick={() => {
+                        const fileInput = document.createElement('input');
+                        fileInput.type = 'file';
+                        fileInput.accept = '.json';
+                        fileInput.onchange = (e: any) => {
+                          const file = e.target.files[0];
+                          const reader = new FileReader();
+                          reader.onload = (event: any) => {
+                            setImportText(event.target.result);
+                          };
+                          reader.readAsText(file);
+                        };
+                        fileInput.click();
+                      }}
+                      className="px-6 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold flex-1 py-4 rounded-2xl transition-all active:scale-95 flex items-center justify-center gap-2"
+                    >
+                      <FileJson size={20} />
+                      File
+                    </button>
+                  </div>
                 </div>
               </div>
             </motion.div>
           </div>
         )}
       </AnimatePresence>
+
+      {/* Admin Login Modal */}
+      <AnimatePresence>
+        {isAdminLoginOpen && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[60] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-zinc-900 border border-white/10 rounded-3xl p-6 w-full max-w-sm shadow-2xl relative"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-xl font-bold flex items-center gap-2 text-white">
+                  <Lock className="text-purple-500" size={24} />
+                  Admin Login
+                </h2>
+                <button
+                  onClick={() => {
+                    setIsAdminLoginOpen(false);
+                    setScanFile(null);
+                  }}
+                  className="p-2 hover:bg-white/5 rounded-full transition-colors"
+                >
+                  <X size={20} className="text-zinc-500" />
+                </button>
+              </div>
+
+              <p className="text-zinc-400 text-sm mb-6">
+                The AI Scanner is restricted to administrators. Enter the password to continue.
+              </p>
+
+              <form onSubmit={handleAdminLogin} className="space-y-4">
+                <div>
+                  <input
+                    type="password"
+                    placeholder="Enter password"
+                    value={adminPassword}
+                    onChange={(e) => setAdminPassword(e.target.value)}
+                    className="w-full bg-zinc-800 border border-white/5 rounded-xl px-4 py-3 focus:outline-none focus:border-purple-500/50 transition-all text-white font-medium"
+                    autoFocus
+                  />
+                  {loginError && (
+                    <p className="text-red-400 text-xs mt-2 font-medium">{loginError}</p>
+                  )}
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-purple-500/20 active:scale-95 flex justify-center items-center gap-2"
+                >
+                  <Unlock size={18} />
+                  Unlock Scanner
+                </button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
 
       <footer className="fixed bottom-0 left-0 right-0 p-4 pointer-events-none">
         <div className="max-w-md mx-auto pointer-events-auto">
